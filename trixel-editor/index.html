@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <!-- Google tag (gtag.js) -->
+    <script
+      async
+      src="https://www.googletagmanager.com/gtag/js?id=G-LGJSV2Q44R"
+    ></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+
+      gtag("config", "G-LGJSV2Q44R");
+    </script>
+
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+
+    <!-- favicon -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><polygon points='84.6,70 50,90 15.4,70 15.4,30 50,10 84.6,30' fill='%2347A025'/></svg>"
+      type="image/svg+xml"
+    />
+
+    <!-- Reset CSS -->
+    <link rel="stylesheet" href="./reset.css" />
+
+    <!-- For Joakin's elm-canvas package -->
+    <script src="./elm-canvas.js"></script>
+
+    <!-- Play.Profiler — performance flame graph (idle-zero when not recording).
+         Always loaded; the headless surface (window.__playProfile, ?profile=N URL
+         flag) works regardless of withProfiler toggle. See packages/play/README.md. -->
+    <script src="./profiler-element.js"></script>
+
+    <!-- <katex-element> — custom element used by UI.Markdown to render
+         inline + display math ($…$ / $$…$$) in markdown text. Always
+         loaded; the element lazy-loads KaTeX from jsDelivr on first
+         instance, so pages without math pay nothing. -->
+    <script src="./katex-element.js"></script>
+
+    <!-- Howler.js (MIT) — backs the Sound module's Howl-based playback.
+         Must load before the Elm bundle so window.Howl / window.Howler
+         are available when sound-shim.js subscribes. -->
+    <script src="./howler.min.js"></script>
+
+    <!-- UI.Tooltip (packages/ui/src/UI/Tooltip.elm) reads
+         event.target.boundingClientRect inside its mouseenter decoder.
+         This shim defines that property as a getter on Element.prototype.
+         Side-effect-only and idempotent — safe on every page. -->
+    <script src="./tooltip-shim.js"></script>
+
+    <!-- Position any [popover][data-popover] next to the button that
+         opens it. The Popover API gives us light-dismiss, Escape, and
+         top-layer rendering for free; this script only adds dropdown-
+         style placement based on the trigger's getBoundingClientRect,
+         so the picker escapes overflow/transform ancestors and lands
+         on whichever side of the trigger has more room. -->
+    <script>
+      (function () {
+        var W = 320,
+          H = 280;
+        document.addEventListener(
+          "beforetoggle",
+          function (e) {
+            var p = e.target;
+            if (!p.matches || !p.matches("[popover][data-popover]")) return;
+            if (e.newState !== "open") return;
+            var t = document.querySelector('[popovertarget="' + p.id + '"]');
+            if (!t) return;
+            var r = t.getBoundingClientRect();
+            var openDown = innerHeight - r.bottom >= H || r.top < H;
+            var openLeft = innerWidth - r.left >= W || r.right < W;
+            // Override UA `[popover] { inset: 0 }` first — clearing to ''
+            // falls back to that, leaving `top: 0` in effect when we only
+            // set `bottom`, which then wins over our `bottom` per CSS
+            // over-constraint resolution and pins the picker to the top.
+            p.style.top =
+              p.style.bottom =
+              p.style.left =
+              p.style.right =
+                "auto";
+            if (openDown) p.style.top = r.bottom + 8 + "px";
+            else p.style.bottom = innerHeight - r.top + 8 + "px";
+            if (openLeft) p.style.left = r.left + "px";
+            else p.style.right = innerWidth - r.right + "px";
+          },
+          true
+        );
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="app"></div>
+
+    <script src="./main.js"></script>
+
+    <script type="module">
+      import { sendInputsToElmApp, inputs } from "./input.js";
+      const pageScript = await import("./page-script.js");
+      if (pageScript.beforeInit) await pageScript.beforeInit();;
+
+      // Read the URL query into a [key, value] list and hand it to Elm on
+      // `inputs.searchParamsFromUrl` — the single URL→Elm channel. The Elm
+      // side parses each configuration value against its declared type, and
+      // multipage consumers read their own params (e.g. `mode=author` for
+      // the PopUp Explainer) from the same list. `null` (not `[]`) when the
+      // URL has no params, so the Elm `Maybe (List (String, String))`
+      // decodes cleanly; the Elm side calls `Dict.fromList` to recover a dict.
+      const urlParams = new URLSearchParams(window.location.search);
+
+      let searchParamsFromUrl = null;
+      for (const [key, value] of urlParams.entries()) {
+        if (searchParamsFromUrl === null) searchParamsFromUrl = [];
+        searchParamsFromUrl.push([key, value]);
+      }
+      inputs.searchParamsFromUrl = searchParamsFromUrl;
+
+      const app = Elm.TrixelEditor.Main.init({
+        node: document.querySelector("#app"),
+        flags: { inputs },
+      });
+
+      sendInputsToElmApp(app);
+      if (pageScript.afterInit) await pageScript.afterInit(app);;
+    </script>
+  </body>
+</html>

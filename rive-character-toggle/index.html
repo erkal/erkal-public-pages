@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rive WebGL2 — Character Toggle</title>
+<link rel="icon" href="data:," /><!-- no favicon: suppress the 404 -->
+
+<!-- Rive WebGL2 runtime (the Rive Renderer), pinned for reproducibility. -->
+<script src="https://unpkg.com/@rive-app/webgl2@2.38.1"></script>
+
+<style>
+  :root {
+    --bg1: #f7f6f3; --bg2: #eceae4;
+    --card: #ffffff; --line: #e9e7e0; --ink: #26251f; --muted: #8c897e;
+    --idle: #9aa6b2; --happy: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 15px/1.5 -apple-system, ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    color: var(--ink);
+    background: linear-gradient(170deg, var(--bg1), var(--bg2));
+    min-height: 100%;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 96px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
+  h1 { font-size: 1.2rem; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
+  .sub { color: var(--muted); font-size: 0.84rem; }
+
+  .grid { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }
+  .card {
+    flex: 1 1 210px; max-width: 256px; background: var(--card);
+    border: 1px solid var(--line); border-radius: 18px; padding: 14px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04); cursor: pointer; user-select: none;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.09); }
+  .canvas-wrap {
+    position: relative; aspect-ratio: 1 / 1; width: 100%; border-radius: 12px;
+    overflow: hidden; background: radial-gradient(120% 120% at 50% 18%, #fbfaf8, #efede7);
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin-top: 11px; }
+  .name { font-weight: 600; font-size: 0.92rem; text-transform: capitalize; }
+  .chip { font-size: 0.72rem; padding: 3px 9px; border-radius: 999px; font-weight: 600;
+          background: #eef1f4; color: var(--idle); }
+  .chip.happy { background: #fef3e2; color: var(--happy); }
+  .cap { margin-top: 6px; font-size: 0.7rem; color: var(--muted);
+         font-variant-numeric: tabular-nums; min-height: 1em; }
+  .cap.err { color: #c0392b; }
+
+  /* measurement HUD */
+  .hud {
+    position: fixed; left: 16px; bottom: 16px; z-index: 9;
+    background: rgba(22,22,20,.86); color: #eee; backdrop-filter: blur(6px);
+    font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 11px 13px; border-radius: 11px; max-width: 320px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.25);
+  }
+  .hud b { color: #fff; font-weight: 600; }
+  .hud .dim { color: #9b988f; }
+  .hud hr { border: 0; border-top: 1px solid rgba(255,255,255,.13); margin: 7px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Rive WebGL2 — Character Toggle</h1>
+    <span class="sub">@rive-app/webgl2 2.38.1 · Rive Renderer · click a character to toggle idle ↔ happy</span>
+  </header>
+
+  <div class="grid" id="grid"></div>
+</div>
+
+<div class="hud" id="hud">starting…</div>
+
+<script>
+"use strict";
+
+// ---- config -------------------------------------------------------------
+const DIR = "optimized";   // WebP, right-sized .riv (tens of KB each)
+const CHARACTERS = ["bee", "sloth", "frog"];
+const fileFor = (name, mood) => `${DIR}/${name}-${mood}.riv`;
+const newLayout = () => new rive.Layout({ fit: rive.Fit.Contain, alignment: rive.Alignment.Center });
+
+// ---- metrics (exposed for automated measurement) ------------------------
+const metrics = (window.__metrics = {});   // name -> { idle:{ms,kb}, happy:{ms,kb} }
+window.__frame = { fps: 0 };
+const cards = {};
+
+// ---- card DOM -----------------------------------------------------------
+function buildCards() {
+  const grid = document.getElementById("grid");
+  for (const name of CHARACTERS) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="canvas-wrap"><canvas></canvas></div>
+      <div class="row"><span class="name">${name}</span><span class="chip">🌙 idle</span></div>
+      <div class="cap">loading…</div>`;
+    grid.appendChild(card);
+    cards[name] = {
+      card,
+      canvas: card.querySelector("canvas"),
+      chip: card.querySelector(".chip"),
+      cap: card.querySelector(".cap"),
+      rive: null, mood: "idle", t0: 0, file: "", ready: false,
+    };
+    card.addEventListener("click", () => toggle(name));
+  }
+}
+
+// ---- resource size from the Performance API -----------------------------
+function bytesFor(url) {
+  const abs = new URL(url, location.href).href;
+  const e = performance.getEntriesByType("resource").filter(r => r.name === abs).pop();
+  return e ? (e.encodedBodySize || e.transferSize || 0) : 0;
+}
+
+// ---- create a Rive instance ---------------------------------------------
+function spawn(name) {
+  const e = cards[name];
+  e.mood = "idle"; e.file = fileFor(name, "idle"); e.t0 = performance.now();
+  setChip(e, "idle"); e.cap.classList.remove("err"); e.cap.textContent = "loading…";
+
+  const r = new rive.Rive({
+    src: e.file,
+    canvas: e.canvas,
+    autoplay: true,
+    layout: newLayout(),            // one Layout per instance (not shared)
+    onLoadError: (ev) => {
+      e.cap.classList.add("err"); e.cap.textContent = "load error";
+      console.warn(`[${name}] load error:`, ev?.data ?? ev);
+    },
+  });
+  e.rive = r;
+
+  // Fires on initial load AND after each load() hot-swap.
+  r.on(rive.EventType.Load, () => {
+    r.resizeDrawingSurfaceToCanvas();
+    const ms = Math.round(performance.now() - e.t0);
+    const mood = e.mood;
+    const slot = (metrics[name] = metrics[name] || {});
+    let kb = Math.round(bytesFor(e.file) / 1024);
+    if (!kb && slot[mood]) kb = slot[mood].kb;   // cache hits omit size — reuse frozen
+    e.cap.classList.remove("err");
+    e.cap.textContent = `${mood} · ${kb ? kb + " KB" : "?"} · ${ms} ms`;
+    // Freeze the first measurement per mood; warm re-toggles update only the caption.
+    if (!slot[mood]) slot[mood] = { ms, kb };
+    // Discovery log, once per character: what's actually inside the file.
+    if (mood === "idle" && !e._logged) {
+      e._logged = true;
+      console.log(`[${name}] artboard=${r.activeArtboard} ` +
+        `stateMachines=${JSON.stringify(r.stateMachineNames)} ` +
+        `animations=${JSON.stringify(r.animationNames)}`);
+    }
+    e.ready = true;
+    updateHud();
+  });
+}
+
+// ---- toggle idle <-> happy (hot-swap the file in place) -----------------
+function toggle(name) {
+  const e = cards[name];
+  if (!e.rive || !e.ready) return;   // ignore clicks before the first load lands
+  e.mood = e.mood === "idle" ? "happy" : "idle";
+  e.file = fileFor(name, e.mood);
+  e.t0 = performance.now();
+  setChip(e, e.mood);
+  e.cap.textContent = "loading…";
+  e.rive.load({ src: e.file, autoplay: true });
+}
+
+function setChip(e, mood) {
+  e.chip.className = "chip" + (mood === "happy" ? " happy" : "");
+  e.chip.textContent = mood === "happy" ? "✨ happy" : "🌙 idle";
+}
+
+// ---- HUD + FPS ----------------------------------------------------------
+let plsSupported = null;
+function detectPLS() {
+  try {
+    const gl = document.createElement("canvas").getContext("webgl2");
+    plsSupported = !!(gl && gl.getExtension("WEBGL_shader_pixel_local_storage"));
+    gl && gl.getExtension("WEBGL_lose_context")?.loseContext();   // free the probe context
+  } catch { plsSupported = false; }
+}
+
+function updateHud() {
+  const n = CHARACTERS.length;
+  let loaded = 0, kb = 0, maxMs = 0;
+  for (const name of CHARACTERS) {
+    const idle = metrics[name] && metrics[name].idle;
+    if (idle) { loaded++; kb += idle.kb; maxMs = Math.max(maxMs, idle.ms); }
+  }
+  document.getElementById("hud").innerHTML =
+    `<b>optimized assets</b>` +
+    `<hr><b>initial payload</b> (idle ×${n})<br>` +
+    `&nbsp; loaded <b>${loaded}/${n}</b> · <b>${(kb/1024).toFixed(2)} MB</b> · slowest <b>${maxMs} ms</b>` +
+    `<hr><span class="dim">render path:</span> ${plsSupported ? "PLS (fast)" : "MSAA fallback"}` +
+    `<br><span class="dim">~fps:</span> <b>${window.__frame.fps}</b> ` +
+    `<span class="dim">(rAF, vsync-capped)</span>`;
+}
+
+// rAF-based fps (capped at display refresh — a rough liveness gauge only).
+let frames = 0, last = performance.now();
+function loop(t) {
+  frames++;
+  if (t - last >= 500) { window.__frame.fps = Math.round(frames * 1000 / (t - last)); frames = 0; last = t; updateHud(); }
+  requestAnimationFrame(loop);
+}
+
+// Sample true rAF frame intervals for `ms` (meaningful only with vsync disabled).
+window.__measureFrames = (ms = 1000) => new Promise(res => {
+  const deltas = []; let prev = performance.now(); const t0 = prev;
+  function step(now) { deltas.push(now - prev); prev = now;
+    if (now - t0 < ms) requestAnimationFrame(step);
+    else { deltas.sort((a,b)=>a-b);
+      res({ n: deltas.length, medianMs: +deltas[deltas.length>>1].toFixed(2),
+            p95Ms: +deltas[Math.floor(deltas.length*0.95)].toFixed(2), fps: Math.round(deltas.length*1000/ms) }); } }
+  requestAnimationFrame(step);
+});
+
+// ---- boot ---------------------------------------------------------------
+detectPLS();
+buildCards();
+for (const name of CHARACTERS) spawn(name);
+window.addEventListener("resize", () => {
+  for (const name of CHARACTERS) {
+    const e = cards[name];
+    if (e.rive && e.ready) e.rive.resizeDrawingSurfaceToCanvas();
+  }
+});
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
