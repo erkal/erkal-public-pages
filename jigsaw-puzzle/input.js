@@ -1327,6 +1327,29 @@ const sendInputsToElmApp = (app) => {
     }
   });
 
+  // Reset Play's Interface. Remove every play:* personal-chrome key (mirrors
+  // the read filter in `inputs.persisted` above), then reload so the
+  // now-empty store re-hydrates to the page's coded defaults. The reload is
+  // required: reconcileChrome rewrites the chrome snapshot after every
+  // update, so clearing without reloading is instantly undone.
+  app.ports?.clearPlayLocalStorage?.subscribe?.(() => {
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith("play:")) keys.push(k);
+      }
+      keys.forEach((k) => localStorage.removeItem(k));
+      // Reload only after a successful clear, so a storage failure (private
+      // mode / disabled storage) isn't masked by a fake-success reload into
+      // the unchanged state. When storage is unavailable nothing was ever
+      // persisted, so the interface is already at its coded defaults anyway.
+      window.location.reload();
+    } catch (e) {
+      console.warn("[play] clearPlayLocalStorage failed", e);
+    }
+  });
+
   // popstate fires when the user navigates via browser Back / Forward
   // (or programmatic history.back/.forward) over an entry we previously
   // pushed via pushUrlReset. Elm reads URL params only at init via
