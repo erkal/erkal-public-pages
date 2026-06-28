@@ -135,6 +135,7 @@ const inputs =
     devicePixelRatio: window.devicePixelRatio,
     darkModeIsOn: window.matchMedia("(prefers-color-scheme: dark)").matches,
     focusedElementIsTextInput: false,
+    focusedElementIsContentEditable: false,
     boundingClientRects: [],
     paneBoundingBoxes: [],
     pageScroll: {
@@ -1408,12 +1409,18 @@ const sendInputsToElmApp = (app) => {
 
     // Check if the focused element is a text input
     const active = document.activeElement;
+    const activeIsContentEditable = active != null && active.isContentEditable;
     inputs.focusedElementIsTextInput =
       active != null &&
       (active.tagName === "TEXTAREA" ||
         (active.tagName === "INPUT" &&
           textInputTypes.has((active.type || "text").toLowerCase())) ||
-        active.isContentEditable);
+        activeIsContentEditable);
+    // A richer view of the same focus check: is the focused editable a
+    // contenteditable surface (e.g. a CodeMirror editor) rather than a plain
+    // <input>/<textarea>? Consumers that route editor commands use this to tell
+    // "the editor is focused" from "one of my own form fields is focused".
+    inputs.focusedElementIsContentEditable = activeIsContentEditable;
 
     // Send the `inputs` to elm app
     app.ports?.tick?.send?.(inputs);
