@@ -41,16 +41,20 @@ const inputs =
       // Fallback to userAgent string
       const userAgent = navigator.userAgent.toLowerCase();
 
-      if (userAgent.includes("windows")) return "windows";
-      if (userAgent.includes("mac")) return "mac";
-      if (userAgent.includes("linux")) return "linux";
-      if (userAgent.includes("android")) return "android";
+      // iOS must be tested BEFORE "mac": every iOS user-agent contains
+      // "like Mac OS X", so a bare "mac" test matches iPhones/iPads first.
+      // The iphone/ipad/ipod tokens never appear in a genuine macOS UA, so
+      // real Macs still fall through to the "mac" branch below.
       if (
         userAgent.includes("iphone") ||
         userAgent.includes("ipad") ||
         userAgent.includes("ipod")
       )
         return "ios";
+      if (userAgent.includes("windows")) return "windows";
+      if (userAgent.includes("mac")) return "mac";
+      if (userAgent.includes("linux")) return "linux";
+      if (userAgent.includes("android")) return "android";
 
       return "unknown";
     })(),
@@ -135,6 +139,7 @@ const inputs =
     devicePixelRatio: window.devicePixelRatio,
     darkModeIsOn: window.matchMedia("(prefers-color-scheme: dark)").matches,
     focusedElementIsTextInput: false,
+    focusedElementIsContentEditable: false,
     boundingClientRects: [],
     paneBoundingBoxes: [],
     pageScroll: {
@@ -167,6 +172,8 @@ const inputs =
       return out;
     })(),
     pageId: location.pathname,
+    deviceOrientation: null,
+    screenOrientationAngle: (screen.orientation && screen.orientation.angle) || 0,
   };
 
 let initialized = false;
@@ -781,6 +788,52 @@ const sendInputsToElmApp = (app) => {
     .addEventListener("change", (e) => {
       inputs.darkModeIsOn = e.matches;
     });
+
+  /*
+    Device orientation (gyroscope) + screen rotation angle. Snapshot-style
+    like pointer/wheel — the ~60 Hz events overwrite fields in place; Elm
+    reads the latest once per rAF, so there is no per-event Msg (no flood).
+    Only a reading with real beta+gamma is published; a sensorless all-null
+    event stays null. Interpreted by the Tilt package.
+  */
+  window.addEventListener("deviceorientation", (e) => {
+    if (e.beta === null || e.gamma === null) {
+      inputs.deviceOrientation = null;
+      return;
+    }
+    inputs.deviceOrientation = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
+  });
+
+  const readScreenAngle = () => {
+    inputs.screenOrientationAngle =
+      (screen.orientation && screen.orientation.angle) || 0;
+  };
+  window.addEventListener("orientationchange", readScreenAngle);
+  if (screen.orientation) {
+    screen.orientation.addEventListener("change", readScreenAngle);
+  }
+
+  /*
+    iOS 13+ requires DeviceOrientationEvent.requestPermission() from a REAL
+    user gesture. A capture-phase click on any [data-play-request-orientation]
+    element fires it synchronously (gesture preserved). No-op where the API is
+    absent (Android/desktop). Pages show such a button via Tilt.needsMotionPermission.
+  */
+  document.addEventListener(
+    "click",
+    (e) => {
+      const trigger =
+        e.target.closest && e.target.closest("[data-play-request-orientation]");
+      if (!trigger) return;
+      if (
+        typeof DeviceOrientationEvent !== "undefined" &&
+        typeof DeviceOrientationEvent.requestPermission === "function"
+      ) {
+        DeviceOrientationEvent.requestPermission().catch(() => {});
+      }
+    },
+    true
+  );
 
   /*
     Asset port handlers — texture path is fetch + Image.decode();
@@ -1408,12 +1461,18 @@ const sendInputsToElmApp = (app) => {
 
     // Check if the focused element is a text input
     const active = document.activeElement;
+    const activeIsContentEditable = active != null && active.isContentEditable;
     inputs.focusedElementIsTextInput =
       active != null &&
       (active.tagName === "TEXTAREA" ||
         (active.tagName === "INPUT" &&
           textInputTypes.has((active.type || "text").toLowerCase())) ||
-        active.isContentEditable);
+        activeIsContentEditable);
+    // A richer view of the same focus check: is the focused editable a
+    // contenteditable surface (e.g. a CodeMirror editor) rather than a plain
+    // <input>/<textarea>? Consumers that route editor commands use this to tell
+    // "the editor is focused" from "one of my own form fields is focused".
+    inputs.focusedElementIsContentEditable = activeIsContentEditable;
 
     // Send the `inputs` to elm app
     app.ports?.tick?.send?.(inputs);

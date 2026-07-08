@@ -5,6 +5,15 @@
   font-display: block;
 }
 
+/* Nunito — variable display face (wght 200–1000). Lazy: only pages that
+   reference "Nunito" trigger the fetch. */
+@font-face {
+  font-family: "Nunito";
+  src: url("./Nunito.woff2") format("woff2");
+  font-weight: 200 1000;
+  font-display: swap;
+}
+
 html {
   box-sizing: border-box;
   scroll-behavior: smooth;

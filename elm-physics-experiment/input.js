@@ -41,16 +41,20 @@ const inputs =
       // Fallback to userAgent string
       const userAgent = navigator.userAgent.toLowerCase();
 
-      if (userAgent.includes("windows")) return "windows";
-      if (userAgent.includes("mac")) return "mac";
-      if (userAgent.includes("linux")) return "linux";
-      if (userAgent.includes("android")) return "android";
+      // iOS must be tested BEFORE "mac": every iOS user-agent contains
+      // "like Mac OS X", so a bare "mac" test matches iPhones/iPads first.
+      // The iphone/ipad/ipod tokens never appear in a genuine macOS UA, so
+      // real Macs still fall through to the "mac" branch below.
       if (
         userAgent.includes("iphone") ||
         userAgent.includes("ipad") ||
         userAgent.includes("ipod")
       )
         return "ios";
+      if (userAgent.includes("windows")) return "windows";
+      if (userAgent.includes("mac")) return "mac";
+      if (userAgent.includes("linux")) return "linux";
+      if (userAgent.includes("android")) return "android";
 
       return "unknown";
     })(),
@@ -135,6 +139,7 @@ const inputs =
     devicePixelRatio: window.devicePixelRatio,
     darkModeIsOn: window.matchMedia("(prefers-color-scheme: dark)").matches,
     focusedElementIsTextInput: false,
+    focusedElementIsContentEditable: false,
     boundingClientRects: [],
     paneBoundingBoxes: [],
     pageScroll: {
@@ -167,6 +172,8 @@ const inputs =
       return out;
     })(),
     pageId: location.pathname,
+    deviceOrientation: null,
+    screenOrientationAngle: (screen.orientation && screen.orientation.angle) || 0,
   };
 
 let initialized = false;
@@ -783,6 +790,52 @@ const sendInputsToElmApp = (app) => {
     });
 
   /*
+    Device orientation (gyroscope) + screen rotation angle. Snapshot-style
+    like pointer/wheel — the ~60 Hz events overwrite fields in place; Elm
+    reads the latest once per rAF, so there is no per-event Msg (no flood).
+    Only a reading with real beta+gamma is published; a sensorless all-null
+    event stays null. Interpreted by the Tilt package.
+  */
+  window.addEventListener("deviceorientation", (e) => {
+    if (e.beta === null || e.gamma === null) {
+      inputs.deviceOrientation = null;
+      return;
+    }
+    inputs.deviceOrientation = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
+  });
+
+  const readScreenAngle = () => {
+    inputs.screenOrientationAngle =
+      (screen.orientation && screen.orientation.angle) || 0;
+  };
+  window.addEventListener("orientationchange", readScreenAngle);
+  if (screen.orientation) {
+    screen.orientation.addEventListener("change", readScreenAngle);
+  }
+
+  /*
+    iOS 13+ requires DeviceOrientationEvent.requestPermission() from a REAL
+    user gesture. A capture-phase click on any [data-play-request-orientation]
+    element fires it synchronously (gesture preserved). No-op where the API is
+    absent (Android/desktop). Pages show such a button via Tilt.needsMotionPermission.
+  */
+  document.addEventListener(
+    "click",
+    (e) => {
+      const trigger =
+        e.target.closest && e.target.closest("[data-play-request-orientation]");
+      if (!trigger) return;
+      if (
+        typeof DeviceOrientationEvent !== "undefined" &&
+        typeof DeviceOrientationEvent.requestPermission === "function"
+      ) {
+        DeviceOrientationEvent.requestPermission().catch(() => {});
+      }
+    },
+    true
+  );
+
+  /*
     Asset port handlers — texture path is fetch + Image.decode();
     sound path delegates to sound-shim.js (Howler-backed). Wire keys
     differ by kind: texture is page-global ("texture:<id>"), sound is
@@ -1327,6 +1380,29 @@ const sendInputsToElmApp = (app) => {
     }
   });
 
+  // Reset Play's Interface. Remove every play:* personal-chrome key (mirrors
+  // the read filter in `inputs.persisted` above), then reload so the
+  // now-empty store re-hydrates to the page's coded defaults. The reload is
+  // required: reconcileChrome rewrites the chrome snapshot after every
+  // update, so clearing without reloading is instantly undone.
+  app.ports?.clearPlayLocalStorage?.subscribe?.(() => {
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith("play:")) keys.push(k);
+      }
+      keys.forEach((k) => localStorage.removeItem(k));
+      // Reload only after a successful clear, so a storage failure (private
+      // mode / disabled storage) isn't masked by a fake-success reload into
+      // the unchanged state. When storage is unavailable nothing was ever
+      // persisted, so the interface is already at its coded defaults anyway.
+      window.location.reload();
+    } catch (e) {
+      console.warn("[play] clearPlayLocalStorage failed", e);
+    }
+  });
+
   // popstate fires when the user navigates via browser Back / Forward
   // (or programmatic history.back/.forward) over an entry we previously
   // pushed via pushUrlReset. Elm reads URL params only at init via
@@ -1385,12 +1461,18 @@ const sendInputsToElmApp = (app) => {
 
     // Check if the focused element is a text input
     const active = document.activeElement;
+    const activeIsContentEditable = active != null && active.isContentEditable;
     inputs.focusedElementIsTextInput =
       active != null &&
       (active.tagName === "TEXTAREA" ||
         (active.tagName === "INPUT" &&
           textInputTypes.has((active.type || "text").toLowerCase())) ||
-        active.isContentEditable);
+        activeIsContentEditable);
+    // A richer view of the same focus check: is the focused editable a
+    // contenteditable surface (e.g. a CodeMirror editor) rather than a plain
+    // <input>/<textarea>? Consumers that route editor commands use this to tell
+    // "the editor is focused" from "one of my own form fields is focused".
+    inputs.focusedElementIsContentEditable = activeIsContentEditable;
 
     // Send the `inputs` to elm app
     app.ports?.tick?.send?.(inputs);
