@@ -36,7 +36,18 @@ export function wireLevels(app) {
       try {
         localStorage.setItem(key, msg.text);
       } catch (e) {
+        // A swallowed write is silent, permanent data loss: Elm has already cleared its
+        // dirty flag, so it will never retry. Tell it. `levelsStorageError` is optional —
+        // Elm only generates the port for a page that subscribes.
         console.warn("levels: localStorage write failed", e);
+        if (app.ports.levelsStorageError) {
+          const full = e && e.name === "QuotaExceededError";
+          app.ports.levelsStorageError.send(
+            full
+              ? "There is no room left to save. A big reference picture is the usual cause — host it somewhere and paste the URL instead."
+              : "Saving failed, so your latest changes are not stored."
+          );
+        }
       }
     }
     if (msg.tag === "copy") {

@@ -105,7 +105,8 @@
 
     <script type="module">
       import { sendInputsToElmApp, inputs } from "./input.js";
-      ;
+      const pageScript = await import("./page-script.js");
+      if (pageScript.beforeInit) await pageScript.beforeInit();;
 
       // Read the URL query into a [key, value] list and hand it to Elm on
       // `inputs.searchParamsFromUrl` — the single URL→Elm channel. The Elm
@@ -129,7 +130,7 @@
       });
 
       sendInputsToElmApp(app);
-      ;
+      if (pageScript.afterInit) await pageScript.afterInit(app);;
     </script>
   </body>
 </html>
